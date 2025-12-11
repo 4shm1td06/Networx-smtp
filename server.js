@@ -12,7 +12,7 @@ app.use(express.json());
 // ✅ CORS setup (local + prod)
 app.use(
     cors({
-        origin: ["http://localhost:8080", "https://networx.app"],
+        origin: ["http://localhost:8080", "https://networx-dusky.vercel.app"],
         methods: ["GET", "POST", "OPTIONS"],
         allowedHeaders: ["Content-Type", "Authorization"],
     })
