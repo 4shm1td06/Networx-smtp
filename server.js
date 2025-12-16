@@ -19,6 +19,7 @@ app.use(
       "http://localhost:5173",
       "http://localhost:3000",
       "https://networx-dusky.vercel.app",
+      "https://chat.networxenterprise.co.in",
     ],
     methods: ["GET", "POST", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization"],
