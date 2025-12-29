@@ -14,20 +14,25 @@ app.use(cookieParser());
 // ===========================
 //        CORS
 // ===========================
+const allowedOrigins = [
+  "http://localhost:8080",
+  "http://localhost:5173",
+  "http://localhost:3000",
+  "https://networx-dusky.vercel.app",
+  "https://chat.networxenterprise.co.in",
+];
+
 app.use(
   cors({
-    origin: [
-      "http://localhost:8080",
-      "http://localhost:5173",
-      "http://localhost:3000",
-      "https://networx-dusky.vercel.app",
-      "https://chat.networxenterprise.co.in",
-    ],
-    credentials: true, // required for cookies
+    origin: allowedOrigins,
+    credentials: true,
     methods: ["GET", "POST", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization"],
   })
 );
+
+// Handle preflight requests
+app.options("*", (req, res) => res.sendStatus(200));
 
 // ===========================
 //      Supabase Setup
@@ -100,6 +105,7 @@ app.post("/api/check-email", async (req, res) => {
     const exists = data.users.some((u) => u.email === email);
     res.json({ exists });
   } catch (err) {
+    console.error(err);
     res.status(500).json({ error: "Server error" });
   }
 });
@@ -109,15 +115,20 @@ app.post("/api/send-otp", async (req, res) => {
   const { email } = req.body;
   if (!email) return res.status(400).json({ error: "Email required" });
 
-  const { data } = await supabase.auth.admin.listUsers();
-  const exists = data.users.some((u) => u.email === email);
-  if (exists) return res.status(400).json({ error: "Email already registered" });
+  try {
+    const { data } = await supabase.auth.admin.listUsers();
+    const exists = data.users.some((u) => u.email === email);
+    if (exists) return res.status(400).json({ error: "Email already registered" });
 
-  const otp = Math.floor(100000 + Math.random() * 900000).toString();
-  otpStore.set(email, { otp, expiresAt: Date.now() + 5 * 60 * 1000 });
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    otpStore.set(email, { otp, expiresAt: Date.now() + 5 * 60 * 1000 });
 
-  await sendOtpEmail(email, otp);
-  res.json({ message: "OTP sent" });
+    await sendOtpEmail(email, otp);
+    res.json({ message: "OTP sent" });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Server error" });
+  }
 });
 
 // 🔍 Verify OTP
@@ -136,33 +147,42 @@ app.post("/api/set-password", async (req, res) => {
   const rec = otpStore.get(email);
   if (!rec || !rec.verified) return res.status(400).json({ error: "Email not verified" });
 
-  const { error } = await supabase.auth.admin.createUser({
-    email,
-    password,
-    email_confirm: true,
-  });
-  if (error) throw error;
+  try {
+    const { error } = await supabase.auth.admin.createUser({
+      email,
+      password,
+      email_confirm: true,
+    });
+    if (error) throw error;
 
-  otpStore.delete(email);
-  res.json({ success: true });
+    otpStore.delete(email);
+    res.json({ success: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Server error" });
+  }
 });
 
 // 🔐 Login with Cookie
 app.post("/api/login", async (req, res) => {
   const { email, password } = req.body;
-  const { data, error } = await supabase.auth.signInWithPassword({ email, password });
 
-  if (error) return res.status(401).json({ error: "Invalid credentials" });
+  try {
+    const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+    if (error) return res.status(401).json({ error: "Invalid credentials" });
 
-  // Set HTTP-only cookie
-  res.cookie("networx_token", data.session.access_token, {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
-    sameSite: "None",
-    maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
-  });
+    res.cookie("networx_token", data.session.access_token, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "None",
+      maxAge: 7 * 24 * 60 * 60 * 1000,
+    });
 
-  res.json({ success: true, userId: data.user.id });
+    res.json({ success: true, userId: data.user.id });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Server error" });
+  }
 });
 
 // ✅ Get logged-in user
@@ -170,10 +190,15 @@ app.get("/api/me", async (req, res) => {
   const token = req.cookies.networx_token;
   if (!token) return res.status(401).json({ error: "Not logged in" });
 
-  const { data: user, error } = await supabase.auth.getUser(token);
-  if (error) return res.status(401).json({ error: "Invalid token" });
+  try {
+    const { data: user, error } = await supabase.auth.getUser(token);
+    if (error) return res.status(401).json({ error: "Invalid token" });
 
-  res.json({ user });
+    res.json({ user });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Server error" });
+  }
 });
 
 // ✅ Logout
@@ -223,7 +248,6 @@ app.post("/api/generate-connection-code", async (req, res) => {
   }
 });
 
-// Get latest connection code
 app.post("/api/get-latest-code", async (req, res) => {
   const { userId } = req.body;
   if (!userId) return res.status(400).json({ error: "userId required" });
@@ -253,29 +277,52 @@ app.post("/api/send-message", async (req, res) => {
   const { senderId, receiverId, content } = req.body;
   if (!senderId || !receiverId || !content) return res.status(400).json({ error: "Missing fields" });
 
-  const { error } = await supabase.from("messages").insert([{ sender_id: senderId, receiver_id: receiverId, content }]);
-  if (error) return res.status(500).json({ error: error.message });
+  try {
+    const { error } = await supabase
+      .from("messages")
+      .insert([{ sender_id: senderId, receiver_id: receiverId, content }]);
+    if (error) throw error;
 
-  res.json({ success: true });
+    res.json({ success: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Server error" });
+  }
 });
 
+// Fetch all messages between two users
 app.post("/api/get-messages", async (req, res) => {
   const { userId, partnerId } = req.body;
-  const { data, error } = await supabase
-    .from("messages")
-    .select("*")
-    .or(`sender_id.eq.${userId},receiver_id.eq.${partnerId}`)
-    .order("created_at", { ascending: true });
-  if (error) return res.status(500).json({ error: error.message });
+  if (!userId || !partnerId) return res.status(400).json({ error: "Missing fields" });
 
-  res.json({ messages: data });
+  try {
+    const { data, error } = await supabase
+      .from("messages")
+      .select("*")
+      .or(
+        `(sender_id.eq.${userId},receiver_id.eq.${partnerId}),(sender_id.eq.${partnerId},receiver_id.eq.${userId})`
+      )
+      .order("created_at", { ascending: true });
+    if (error) throw error;
+
+    res.json({ messages: data });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Server error" });
+  }
 });
 
+// Mark message read & delete
 app.post("/api/read-message", async (req, res) => {
   const { messageId } = req.body;
-  await supabase.from("messages").update({ is_read: true }).eq("id", messageId);
-  await supabase.from("messages").delete().eq("id", messageId);
-  res.json({ success: true });
+  try {
+    await supabase.from("messages").update({ is_read: true }).eq("id", messageId);
+    await supabase.from("messages").delete().eq("id", messageId);
+    res.json({ success: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Server error" });
+  }
 });
 
 // --- Get public.users ID by email ---
@@ -292,7 +339,7 @@ app.post("/api/get-user-id", async (req, res) => {
     if (error || !data) return res.status(404).json({ error: "User not found" });
     res.json({ id: data.id });
   } catch (err) {
-    console.error("Server error fetching user ID:", err);
+    console.error(err);
     res.status(500).json({ error: "Server error" });
   }
 });
