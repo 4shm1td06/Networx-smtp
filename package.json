@@ -9,6 +9,7 @@
   "private": true,
   "dependencies": {
     "@supabase/supabase-js": "^2.87.1",
+    "cookie-parser": "^1.4.7",
     "cors": "^2.8.5",
     "dotenv": "^17.2.3",
     "express": "^5.1.0",
