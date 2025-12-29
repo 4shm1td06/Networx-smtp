@@ -229,6 +229,17 @@ app.get("/api/me", async (req, res) => {
   }
 });
 
+
+app.post("/api/logout", (req, res) => {
+  res.clearCookie("token", {
+    httpOnly: true,
+    secure: true,
+    sameSite: "none",
+  });
+
+  res.json({ success: true });
+});
+
 // ===========================================================
 //              CONNECTION CODE SYSTEM
 // ===========================================================
