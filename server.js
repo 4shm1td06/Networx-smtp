@@ -231,14 +231,21 @@ app.get("/api/me", async (req, res) => {
 
 
 app.post("/api/logout", (req, res) => {
-  res.clearCookie("token", {
+  res.clearCookie("networx_token", {
     httpOnly: true,
-    secure: true,
-    sameSite: "none",
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "None",
   });
 
-  res.json({ success: true });
+  res.clearCookie("networx_refresh", {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "None",
+  });
+
+  return res.json({ success: true });
 });
+
 
 // ===========================================================
 //              CONNECTION CODE SYSTEM
