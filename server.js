@@ -1,13 +1,15 @@
-// server.js (Networx Auth + Connection + Messaging Server)
+// server.js (Networx Auth + Connection)
 import express from "express";
 import nodemailer from "nodemailer";
 import { createClient } from "@supabase/supabase-js";
 import dotenv from "dotenv";
 import cors from "cors";
+import cookieParser from "cookie-parser";
 
 dotenv.config();
 const app = express();
 app.use(express.json());
+app.use(cookieParser());
 
 // ===========================
 //        CORS
@@ -149,143 +151,123 @@ app.post("/api/set-password", async (req, res) => {
   res.json({ success: true });
 });
 
-// 🔐 Login
+// 🔐 Login (persistent cookie)
 app.post("/api/login", async (req, res) => {
   const { email, password } = req.body;
-  const { data, error } = await supabase.auth.signInWithPassword({ email, password });
 
-  if (error) return res.status(401).json({ error: "Invalid credentials" });
+  try {
+    const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+    if (error) return res.status(401).json({ error: "Invalid credentials" });
 
-  res.json({ success: true, token: data.session.access_token, userId: data.user.id });
+    // Set long-lived cookies (10 years)
+    const maxAge = 10 * 365 * 24 * 60 * 60 * 1000;
+
+    res.cookie("networx_token", data.session.access_token, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "None",
+      maxAge,
+    });
+
+    res.cookie("networx_refresh", data.session.refresh_token, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "None",
+      maxAge,
+    });
+
+    res.json({ success: true, userId: data.user.id });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+// 🔑 Current user (auto-refresh token)
+app.get("/api/me", async (req, res) => {
+  let token = req.cookies.networx_token;
+  const refreshToken = req.cookies.networx_refresh;
+
+  if (!token && !refreshToken) return res.status(401).json({ error: "Not logged in" });
+
+  try {
+    let userData;
+
+    if (token) {
+      const { data, error } = await supabase.auth.getUser(token);
+      if (!error) userData = data.user;
+    }
+
+    // Refresh if access token expired
+    if (!userData && refreshToken) {
+      const { data, error } = await supabase.auth.refreshSession({ refresh_token: refreshToken });
+      if (error) return res.status(401).json({ error: "Invalid session" });
+
+      // Update cookies
+      const maxAge = 10 * 365 * 24 * 60 * 60 * 1000;
+      res.cookie("networx_token", data.session.access_token, {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === "production",
+        sameSite: "None",
+        maxAge,
+      });
+      res.cookie("networx_refresh", data.session.refresh_token, {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === "production",
+        sameSite: "None",
+        maxAge,
+      });
+
+      userData = data.user;
+    }
+
+    if (!userData) return res.status(401).json({ error: "Not logged in" });
+    res.json({ user: userData });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Server error" });
+  }
 });
 
 // ===========================================================
 //              CONNECTION CODE SYSTEM
 // ===========================================================
-
 function generateShortCode() {
   return Math.random().toString(36).substring(2, 8).toUpperCase();
 }
 
-// ===========================
-// Generate a connection code
-// ===========================
 app.post("/api/generate-connection-code", async (req, res) => {
   const { ownerUserId, expirationMinutes = 15 } = req.body;
-
-  if (!ownerUserId) {
-    return res.status(400).json({ error: "ownerUserId required" });
-  }
+  if (!ownerUserId) return res.status(400).json({ error: "ownerUserId required" });
 
   try {
-    // 1️⃣ Confirm ownerUserId exists in public.users
     const { data: userCheck, error: userErr } = await supabase
       .from("users")
       .select("id")
       .eq("id", ownerUserId)
       .single();
 
-    if (userErr || !userCheck) {
-      return res.status(400).json({ error: "Invalid ownerUserId" });
-    }
+    if (userErr || !userCheck) return res.status(400).json({ error: "Invalid ownerUserId" });
 
-    // 2️⃣ Generate short code
-    const code = Math.random().toString(36).substring(2, 8).toUpperCase();
+    const code = generateShortCode();
     const expiresAt = new Date(Date.now() + expirationMinutes * 60 * 1000).toISOString();
 
-    // 3️⃣ Insert into connection_code table
     const { data: inserted, error: insertError } = await supabase
       .from("connection_code")
-      .insert({
-        code,
-        owner_user_id: ownerUserId,
-        verified: false,
-        expires_at: expiresAt,
-      })
+      .insert({ code, owner_user_id: ownerUserId, verified: false, expires_at: expiresAt })
       .select()
       .single();
 
     if (insertError) throw insertError;
 
-    res.json({
-      code: inserted.code,
-      expiresAt: inserted.expires_at,
-      codeId: inserted.id,
-    });
+    res.json({ code: inserted.code, expiresAt: inserted.expires_at, codeId: inserted.id });
   } catch (err) {
     console.error("generate-connection-code error:", err);
     res.status(500).json({ error: "Server error" });
   }
 });
 
-
-
-// ===========================
-// Verify connection code
-// ===========================
-// app.post("/api/verify-connection-code", async (req, res) => {
-//   const { code, verifyingUserId } = req.body;
-
-//   if (!code || !verifyingUserId) {
-//     return res.status(400).json({ success: false, message: "code and verifyingUserId required" });
-//   }
-
-//   try {
-//     // 1️⃣ Fetch the code row (unverified)
-//     const { data: codeRow, error: selectError } = await supabase
-//       .from("codes")
-//       .select("*")
-//       .eq("code", code)
-//       .eq("verified", false)
-//       .maybeSingle(); // safe: returns null if not found
-
-//     if (selectError) throw selectError;
-//     if (!codeRow) return res.status(400).json({ success: false, message: "Invalid or already used code" });
-
-//     // 2️⃣ Prevent self-connection
-//     if (codeRow.owner_user_id === verifyingUserId) {
-//       return res.status(400).json({ success: false, message: "Cannot use your own code" });
-//     }
-
-//     // 3️⃣ Check expiry
-//     if (codeRow.expires_at && new Date(codeRow.expires_at).getTime() < Date.now()) {
-//       return res.status(400).json({ success: false, message: "Code expired" });
-//     }
-
-//     // 4️⃣ Mark code as verified
-//     const { data: updatedCode, error: updateError } = await supabase
-//       .from("codes")
-//       .update({ verified: true })
-//       .eq("id", codeRow.id)
-//       .select()
-//       .single();
-//     if (updateError) throw updateError;
-
-//     // 5️⃣ Insert into connections table
-//     const { data: connection, error: connError } = await supabase
-//       .from("connections")
-//       .insert({
-//         user_a: codeRow.owner_user_id,
-//         user_b: verifyingUserId,
-//       })
-//       .select()
-//       .single();
-//     if (connError) throw connError;
-
-//     res.json({
-//       success: true,
-//       connectionId: connection.id,
-//       userA: connection.user_a,
-//       userB: connection.user_b,
-//     });
-//   } catch (err) {
-//     console.error("verify-connection-code error:", err);
-//     res.status(500).json({ success: false, message: "Server error" });
-//   }
-// });
-
-
-// Get latest connection code for a user
+// Get latest connection code
 app.post("/api/get-latest-code", async (req, res) => {
   const { userId } = req.body;
   if (!userId) return res.status(400).json({ error: "userId required" });
@@ -299,71 +281,12 @@ app.post("/api/get-latest-code", async (req, res) => {
       .limit(1)
       .single();
 
-    if (error) {
-      console.error("get-latest-code error:", error);
-      return res.status(500).json({ error: "Server error" });
-    }
-
+    if (error) return res.status(500).json({ error: "Server error" });
     if (!data) return res.status(404).json({ error: "No code found" });
 
     res.json({ codeData: data });
   } catch (err) {
     console.error("get-latest-code exception:", err);
-    res.status(500).json({ error: "Server error" });
-  }
-});
-
-
-
-// ===========================================================
-//                    MESSAGING SYSTEM
-// ===========================================================
-app.post("/api/send-message", async (req, res) => {
-  const { senderId, receiverId, content } = req.body;
-  if (!senderId || !receiverId || !content) return res.status(400).json({ error: "Missing fields" });
-
-  const { error } = await supabase.from("messages").insert([{ sender_id: senderId, receiver_id: receiverId, content }]);
-  if (error) return res.status(500).json({ error: error.message });
-
-  res.json({ success: true });
-});
-
-app.post("/api/get-messages", async (req, res) => {
-  const { userId, partnerId } = req.body;
-  const { data, error } = await supabase
-    .from("messages")
-    .select("*")
-    .or(`sender_id.eq.${userId},receiver_id.eq.${partnerId}`)
-    .order("created_at", { ascending: true });
-
-  if (error) return res.status(500).json({ error: error.message });
-
-  res.json({ messages: data });
-});
-
-app.post("/api/read-message", async (req, res) => {
-  const { messageId } = req.body;
-  await supabase.from("messages").update({ is_read: true }).eq("id", messageId);
-  await supabase.from("messages").delete().eq("id", messageId);
-  res.json({ success: true });
-});
-
-// --- Get public.users ID by email ---
-app.post("/api/get-user-id", async (req, res) => {
-  const { email } = req.body;
-  if (!email) return res.status(400).json({ error: "Email required" });
-
-  try {
-    const { data, error } = await supabase
-      .from("users")
-      .select("id")
-      .eq("email", email)
-      .single();
-
-    if (error || !data) return res.status(404).json({ error: "User not found" });
-    res.json({ id: data.id });
-  } catch (err) {
-    console.error("Server error fetching user ID:", err);
     res.status(500).json({ error: "Server error" });
   }
 });
