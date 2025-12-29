@@ -370,58 +370,6 @@ app.post("/api/get-user-id", async (req, res) => {
   }
 });
 
-
-// ===========================================================
-//                WEB RTC SOCKET
-// ===========================================================
-const users = {}; // userId -> socket.id
-
-io.on("connection", (socket) => {
-  console.log("🟢 Socket connected:", socket.id);
-
-  socket.on("register-user", (userId) => {
-    users[userId] = socket.id;
-    socket.userId = userId;
-    console.log("👤 Registered:", userId);
-  });
-
-  socket.on("call-user", ({ toUserId, offer, video }) => {
-    const target = users[toUserId];
-    if (!target) return;
-
-    io.to(target).emit("incoming-call", {
-      fromUserId: socket.userId,
-      offer,
-      video,
-    });
-  });
-
-  socket.on("answer-call", ({ toUserId, answer }) => {
-    const target = users[toUserId];
-    if (!target) return;
-
-    io.to(target).emit("call-accepted", {
-      answer,
-    });
-  });
-
-  socket.on("ice-candidate", ({ toUserId, candidate }) => {
-    const target = users[toUserId];
-    if (!target) return;
-
-    io.to(target).emit("ice-candidate", {
-      candidate,
-    });
-  });
-
-  socket.on("disconnect", () => {
-    if (socket.userId) {
-      delete users[socket.userId];
-      console.log("🔴 Disconnected:", socket.userId);
-    }
-  });
-});
-
 // ===========================================================
 //                START SERVER
 // ===========================================================
