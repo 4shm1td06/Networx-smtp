@@ -4,40 +4,28 @@ import nodemailer from "nodemailer";
 import { createClient } from "@supabase/supabase-js";
 import dotenv from "dotenv";
 import cors from "cors";
-import cookieParser from "cookie-parser";
 
 dotenv.config();
 const app = express();
 app.use(express.json());
-app.use(cookieParser());
 
 // ===========================
 //        CORS
 // ===========================
-const allowedOrigins = [
-  "http://localhost:8080",
-  "http://localhost:5173",
-  "http://localhost:3000",
-  "https://networx-dusky.vercel.app",
-  "https://chat.networxenterprise.co.in",
-];
-
 app.use(
   cors({
-    origin: allowedOrigins,
+    origin: [
+      "http://localhost:8080",
+      "http://localhost:5173",
+      "http://localhost:3000",
+      "https://networx-dusky.vercel.app",
+      "https://chat.networxenterprise.co.in",
+    ],
     credentials: true,
     methods: ["GET", "POST", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization"],
   })
 );
-
-// Handle preflight requests
-app.options("*", (req, res) => {
-  res.header("Access-Control-Allow-Origin", req.headers.origin || "*");
-  res.header("Access-Control-Allow-Credentials", "true");
-  res.header("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
-  res.header("Access-Control-Allow-Headers", "Content-Type,Authorization");
-  res.sendStatus(200);
 
 // ===========================
 //      Supabase Setup
@@ -62,12 +50,16 @@ const transporter = nodemailer.createTransport({
 //     In-Memory Stores
 // ===========================
 const otpStore = new Map();
+const connectionCodes = new Map();
 
-// Cleanup expired OTPs every minute
+// Cleanup expired OTPs and codes every minute
 setInterval(() => {
   const now = Date.now();
   for (const [email, rec] of otpStore.entries()) {
     if (rec.expiresAt < now) otpStore.delete(email);
+  }
+  for (const [code, rec] of connectionCodes.entries()) {
+    if (rec.expiresAt && rec.expiresAt < now) connectionCodes.delete(code);
   }
 }, 60 * 1000);
 
@@ -110,7 +102,6 @@ app.post("/api/check-email", async (req, res) => {
     const exists = data.users.some((u) => u.email === email);
     res.json({ exists });
   } catch (err) {
-    console.error(err);
     res.status(500).json({ error: "Server error" });
   }
 });
@@ -120,20 +111,15 @@ app.post("/api/send-otp", async (req, res) => {
   const { email } = req.body;
   if (!email) return res.status(400).json({ error: "Email required" });
 
-  try {
-    const { data } = await supabase.auth.admin.listUsers();
-    const exists = data.users.some((u) => u.email === email);
-    if (exists) return res.status(400).json({ error: "Email already registered" });
+  const { data } = await supabase.auth.admin.listUsers();
+  const exists = data.users.some((u) => u.email === email);
+  if (exists) return res.status(400).json({ error: "Email already registered" });
 
-    const otp = Math.floor(100000 + Math.random() * 900000).toString();
-    otpStore.set(email, { otp, expiresAt: Date.now() + 5 * 60 * 1000 });
+  const otp = Math.floor(100000 + Math.random() * 900000).toString();
+  otpStore.set(email, { otp, expiresAt: Date.now() + 5 * 60 * 1000 });
 
-    await sendOtpEmail(email, otp);
-    res.json({ message: "OTP sent" });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Server error" });
-  }
+  await sendOtpEmail(email, otp);
+  res.json({ message: "OTP sent" });
 });
 
 // 🔍 Verify OTP
@@ -152,84 +138,62 @@ app.post("/api/set-password", async (req, res) => {
   const rec = otpStore.get(email);
   if (!rec || !rec.verified) return res.status(400).json({ error: "Email not verified" });
 
-  try {
-    const { error } = await supabase.auth.admin.createUser({
-      email,
-      password,
-      email_confirm: true,
-    });
-    if (error) throw error;
+  const { error } = await supabase.auth.admin.createUser({
+    email,
+    password,
+    email_confirm: true,
+  });
+  if (error) throw error;
 
-    otpStore.delete(email);
-    res.json({ success: true });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Server error" });
-  }
+  otpStore.delete(email);
+  res.json({ success: true });
 });
 
-// 🔐 Login with Cookie
+// 🔐 Login
 app.post("/api/login", async (req, res) => {
   const { email, password } = req.body;
+  const { data, error } = await supabase.auth.signInWithPassword({ email, password });
 
-  try {
-    const { data, error } = await supabase.auth.signInWithPassword({ email, password });
-    if (error) return res.status(401).json({ error: "Invalid credentials" });
+  if (error) return res.status(401).json({ error: "Invalid credentials" });
 
-    res.cookie("networx_token", data.session.access_token, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: "None",
-      maxAge: 7 * 24 * 60 * 60 * 1000,
-    });
-
-    res.json({ success: true, userId: data.user.id });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Server error" });
-  }
-});
-
-// ✅ Get logged-in user
-app.get("/api/me", async (req, res) => {
-  const token = req.cookies.networx_token;
-  if (!token) return res.status(401).json({ error: "Not logged in" });
-
-  try {
-    const { data: user, error } = await supabase.auth.getUser(token);
-    if (error) return res.status(401).json({ error: "Invalid token" });
-
-    res.json({ user });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Server error" });
-  }
-});
-
-// ✅ Logout
-app.post("/api/logout", (req, res) => {
-  res.clearCookie("networx_token");
-  res.json({ success: true });
+  res.json({ success: true, token: data.session.access_token, userId: data.user.id });
 });
 
 // ===========================================================
 //              CONNECTION CODE SYSTEM
 // ===========================================================
+
+function generateShortCode() {
+  return Math.random().toString(36).substring(2, 8).toUpperCase();
+}
+
+// ===========================
+// Generate a connection code
+// ===========================
 app.post("/api/generate-connection-code", async (req, res) => {
   const { ownerUserId, expirationMinutes = 15 } = req.body;
-  if (!ownerUserId) return res.status(400).json({ error: "ownerUserId required" });
+
+  if (!ownerUserId) {
+    return res.status(400).json({ error: "ownerUserId required" });
+  }
 
   try {
+    // 1️⃣ Confirm ownerUserId exists in public.users
     const { data: userCheck, error: userErr } = await supabase
       .from("users")
       .select("id")
       .eq("id", ownerUserId)
       .single();
-    if (userErr || !userCheck) return res.status(400).json({ error: "Invalid ownerUserId" });
 
+    if (userErr || !userCheck) {
+      return res.status(400).json({ error: "Invalid ownerUserId" });
+    }
+
+    // 2️⃣ Generate short code
     const code = Math.random().toString(36).substring(2, 8).toUpperCase();
     const expiresAt = new Date(Date.now() + expirationMinutes * 60 * 1000).toISOString();
 
+    // 3️⃣ Insert into connection_code table
     const { data: inserted, error: insertError } = await supabase
       .from("connection_code")
       .insert({
@@ -240,6 +204,7 @@ app.post("/api/generate-connection-code", async (req, res) => {
       })
       .select()
       .single();
+
     if (insertError) throw insertError;
 
     res.json({
@@ -253,6 +218,74 @@ app.post("/api/generate-connection-code", async (req, res) => {
   }
 });
 
+
+
+// ===========================
+// Verify connection code
+// ===========================
+// app.post("/api/verify-connection-code", async (req, res) => {
+//   const { code, verifyingUserId } = req.body;
+
+//   if (!code || !verifyingUserId) {
+//     return res.status(400).json({ success: false, message: "code and verifyingUserId required" });
+//   }
+
+//   try {
+//     // 1️⃣ Fetch the code row (unverified)
+//     const { data: codeRow, error: selectError } = await supabase
+//       .from("codes")
+//       .select("*")
+//       .eq("code", code)
+//       .eq("verified", false)
+//       .maybeSingle(); // safe: returns null if not found
+
+//     if (selectError) throw selectError;
+//     if (!codeRow) return res.status(400).json({ success: false, message: "Invalid or already used code" });
+
+//     // 2️⃣ Prevent self-connection
+//     if (codeRow.owner_user_id === verifyingUserId) {
+//       return res.status(400).json({ success: false, message: "Cannot use your own code" });
+//     }
+
+//     // 3️⃣ Check expiry
+//     if (codeRow.expires_at && new Date(codeRow.expires_at).getTime() < Date.now()) {
+//       return res.status(400).json({ success: false, message: "Code expired" });
+//     }
+
+//     // 4️⃣ Mark code as verified
+//     const { data: updatedCode, error: updateError } = await supabase
+//       .from("codes")
+//       .update({ verified: true })
+//       .eq("id", codeRow.id)
+//       .select()
+//       .single();
+//     if (updateError) throw updateError;
+
+//     // 5️⃣ Insert into connections table
+//     const { data: connection, error: connError } = await supabase
+//       .from("connections")
+//       .insert({
+//         user_a: codeRow.owner_user_id,
+//         user_b: verifyingUserId,
+//       })
+//       .select()
+//       .single();
+//     if (connError) throw connError;
+
+//     res.json({
+//       success: true,
+//       connectionId: connection.id,
+//       userA: connection.user_a,
+//       userB: connection.user_b,
+//     });
+//   } catch (err) {
+//     console.error("verify-connection-code error:", err);
+//     res.status(500).json({ success: false, message: "Server error" });
+//   }
+// });
+
+
+// Get latest connection code for a user
 app.post("/api/get-latest-code", async (req, res) => {
   const { userId } = req.body;
   if (!userId) return res.status(400).json({ error: "userId required" });
@@ -265,7 +298,12 @@ app.post("/api/get-latest-code", async (req, res) => {
       .order("created_at", { ascending: false })
       .limit(1)
       .single();
-    if (error) return res.status(500).json({ error: "Server error" });
+
+    if (error) {
+      console.error("get-latest-code error:", error);
+      return res.status(500).json({ error: "Server error" });
+    }
+
     if (!data) return res.status(404).json({ error: "No code found" });
 
     res.json({ codeData: data });
@@ -275,6 +313,8 @@ app.post("/api/get-latest-code", async (req, res) => {
   }
 });
 
+
+
 // ===========================================================
 //                    MESSAGING SYSTEM
 // ===========================================================
@@ -282,52 +322,30 @@ app.post("/api/send-message", async (req, res) => {
   const { senderId, receiverId, content } = req.body;
   if (!senderId || !receiverId || !content) return res.status(400).json({ error: "Missing fields" });
 
-  try {
-    const { error } = await supabase
-      .from("messages")
-      .insert([{ sender_id: senderId, receiver_id: receiverId, content }]);
-    if (error) throw error;
+  const { error } = await supabase.from("messages").insert([{ sender_id: senderId, receiver_id: receiverId, content }]);
+  if (error) return res.status(500).json({ error: error.message });
 
-    res.json({ success: true });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Server error" });
-  }
+  res.json({ success: true });
 });
 
-// Fetch all messages between two users
 app.post("/api/get-messages", async (req, res) => {
   const { userId, partnerId } = req.body;
-  if (!userId || !partnerId) return res.status(400).json({ error: "Missing fields" });
+  const { data, error } = await supabase
+    .from("messages")
+    .select("*")
+    .or(`sender_id.eq.${userId},receiver_id.eq.${partnerId}`)
+    .order("created_at", { ascending: true });
 
-  try {
-    const { data, error } = await supabase
-      .from("messages")
-      .select("*")
-      .or(
-        `(sender_id.eq.${userId},receiver_id.eq.${partnerId}),(sender_id.eq.${partnerId},receiver_id.eq.${userId})`
-      )
-      .order("created_at", { ascending: true });
-    if (error) throw error;
+  if (error) return res.status(500).json({ error: error.message });
 
-    res.json({ messages: data });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Server error" });
-  }
+  res.json({ messages: data });
 });
 
-// Mark message read & delete
 app.post("/api/read-message", async (req, res) => {
   const { messageId } = req.body;
-  try {
-    await supabase.from("messages").update({ is_read: true }).eq("id", messageId);
-    await supabase.from("messages").delete().eq("id", messageId);
-    res.json({ success: true });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Server error" });
-  }
+  await supabase.from("messages").update({ is_read: true }).eq("id", messageId);
+  await supabase.from("messages").delete().eq("id", messageId);
+  res.json({ success: true });
 });
 
 // --- Get public.users ID by email ---
@@ -341,10 +359,11 @@ app.post("/api/get-user-id", async (req, res) => {
       .select("id")
       .eq("email", email)
       .single();
+
     if (error || !data) return res.status(404).json({ error: "User not found" });
     res.json({ id: data.id });
   } catch (err) {
-    console.error(err);
+    console.error("Server error fetching user ID:", err);
     res.status(500).json({ error: "Server error" });
   }
 });
