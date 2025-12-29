@@ -22,6 +22,7 @@ app.use(
   cors({
     origin: [
       "http://localhost:3000",
+      "http://localhost:8080",
       "http://localhost:5173",
       "https://networx-dusky.vercel.app",
       "https://chat.networxenterprise.co.in",
