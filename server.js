@@ -185,7 +185,7 @@ app.post("/api/login", async (req, res) => {
 
 // 🔑 Current user (auto-refresh token)
 app.get("/api/me", async (req, res) => {
-  const token = req.cookies.networx_token;
+  let token = req.cookies.networx_token;
   const refreshToken = req.cookies.networx_refresh;
 
   if (!token && !refreshToken) return res.status(401).json({ error: "Not logged in" });
@@ -198,29 +198,31 @@ app.get("/api/me", async (req, res) => {
       if (!error) userData = data.user;
     }
 
+    // Refresh if access token expired
     if (!userData && refreshToken) {
       const { data, error } = await supabase.auth.refreshSession({ refresh_token: refreshToken });
-      if (!error) {
-        // update cookies
-        const maxAge = 10 * 365 * 24 * 60 * 60 * 1000;
-        res.cookie("networx_token", data.session.access_token, { httpOnly: true, secure: true, sameSite: "None", maxAge });
-        res.cookie("networx_refresh", data.session.refresh_token, { httpOnly: true, secure: true, sameSite: "None", maxAge });
-        userData = data.user;
-      }
+      if (error) return res.status(401).json({ error: "Invalid session" });
+
+      // Update cookies
+      const maxAge = 10 * 365 * 24 * 60 * 60 * 1000;
+      res.cookie("networx_token", data.session.access_token, {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === "production",
+        sameSite: "None",
+        maxAge,
+      });
+      res.cookie("networx_refresh", data.session.refresh_token, {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === "production",
+        sameSite: "None",
+        maxAge,
+      });
+
+      userData = data.user;
     }
 
     if (!userData) return res.status(401).json({ error: "Not logged in" });
-
-    // Get full public profile
-    const { data: profile, error: profileErr } = await supabase
-      .from("users")
-      .select("*")
-      .eq("id", userData.id)
-      .single();
-
-    if (profileErr) return res.status(500).json({ error: "Could not fetch user profile" });
-
-    res.json({ user: { ...userData, ...profile } });
+    res.json({ user: userData });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Server error" });
