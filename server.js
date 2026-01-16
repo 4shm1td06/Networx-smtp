@@ -152,6 +152,7 @@ app.post("/api/login", async (req, res) => {
 
   res.json({
     success: true,
+    userId: data.user.id,
     accessToken: data.session.access_token,
     refreshToken: data.session.refresh_token,
     user: { id: data.user.id, email: data.user.email },
