@@ -1,9 +1,9 @@
-import express from "express";
-import nodemailer from "nodemailer";
-import { createClient } from "@supabase/supabase-js";
-import webpush from "web-push";
-import dotenv from "dotenv";
-import cors from "cors";
+const express = require("express");
+const nodemailer = require("nodemailer");
+const { createClient } = require("@supabase/supabase-js");
+const webpush = require("web-push");
+const dotenv = require("dotenv");
+const cors = require("cors");
 
 dotenv.config();
 const app = express();
@@ -279,7 +279,7 @@ app.post("/api/push/send", async (req, res) => {
 
         await webpush.sendNotification(subscription, payload);
         successCount++;
-      } catch (pushError: any) {
+      } catch (pushError) {
         console.error("Push error:", pushError.message);
 
         // If subscription is invalid, remove it
@@ -335,4 +335,4 @@ app.post("/api/push/unsubscribe", async (req, res) => {
 const PORT = process.env.PORT || 4012;
 app.listen(PORT, () => console.log(`🚀 Networx API running on port ${PORT}`));
 
-export default app;
+module.exports = app;
